@@ -1,4 +1,4 @@
-# 🚀 MS Teams Automation: Access Request Reminders
+# MS Teams Automation: Access Request Reminders
 
 > **Automated Microsoft Teams access-request reminders driven by Excel deadlines, dynamic activity tracking, Adaptive Cards, and responsible-PM mentions.**
 
@@ -9,26 +9,26 @@
 
 ---
 
-## 📖 Overview
+## Overview
 
 The **MS Teams Access Request Automation** project bridges the gap between project management trackers in Excel and actionable, real-time communications in Microsoft Teams. 
 
 When managing multiple software applications, tracking access requests and release activities (such as `QA R-Task`, `Dev OUR`, and `Prod Service Request`) can become overwhelming. This project automatically reads a master Excel tracker, dynamically identifies pending activities with approaching due dates, and dispatches a consolidated, beautifully formatted Adaptive Card to a Microsoft Teams channel via Power Automate.
 
-### 🎯 Key Features
-- **📊 Excel-based Tracking:** Safely parses data from Excel, automatically bypassing OS and OneDrive file locks.
-- **🔍 Dynamic Activity Detection:** Scans for any date-bearing columns dynamically—no hardcoded column mapping required!
-- **⏳ Individual Due-Date Filtering:** Excludes individual pending activities that are more than 10 days away, ensuring teams only focus on immediate priorities.
-- **📅 Smart Reminder Windows:** Qualifies applications based on the overall `Start Date` or `End Date` falling within a configurable reminder threshold.
-- **👤 Responsible PM @Mentions:** Associates applications directly with the Responsible PM, alerting them via native Teams `@mentions`.
-- **🗂️ Application-Level Separation:** Distinctly separates multiple applications owned by the same PM, providing a clean visual hierarchy.
-- **🎨 Professional Adaptive Cards:** Renders the notifications using a structured, vertical container layout instead of cluttered tables.
-- **🔇 Deduplication Engine:** Prevents notification fatigue by tracking previously dispatched alerts via a local state file.
-- **🧪 Dry-Run Mode:** Validate business logic and preview JSON payloads safely without actually dispatching webhooks.
+### Key Features
+- **Excel-based Tracking:** Safely parses data from Excel, automatically bypassing OS and OneDrive file locks.
+- **Dynamic Activity Detection:** Scans for any date-bearing columns dynamically—no hardcoded column mapping required!
+- **Individual Due-Date Filtering:** Excludes individual pending activities that are more than 10 days away, ensuring teams only focus on immediate priorities.
+- **Smart Reminder Windows:** Qualifies applications based on the overall `Start Date` or `End Date` falling within a configurable reminder threshold.
+- **Responsible PM @Mentions:** Associates applications directly with the Responsible PM, alerting them via native Teams `@mentions`.
+- **Application-Level Separation:** Distinctly separates multiple applications owned by the same PM, providing a clean visual hierarchy.
+- **Professional Adaptive Cards:** Renders the notifications using a structured, vertical container layout instead of cluttered tables.
+- **Deduplication Engine:** Prevents notification fatigue by tracking previously dispatched alerts via a local state file.
+- **Dry-Run Mode:** Validate business logic and preview JSON payloads safely without actually dispatching webhooks.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 The system operates in a unidirectional flow. A scheduled Python orchestrator analyzes the Excel tracker and forwards the resulting Adaptive Card payload to a Power Automate webhook, which acts as the transport layer to Microsoft Teams.
 
@@ -46,7 +46,7 @@ flowchart TD
 
 ---
 
-## 🧩 How It Works
+## How It Works
 
 ### 1. Excel Input Structure
 The application processes a master Excel workbook containing release schedules. It handles empty cells, non-breaking spaces, and unexpected date formats. 
@@ -74,7 +74,7 @@ Instead of hardcoding "Dev OUR", the script dynamically discovers date-bearing c
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```text
 MS_Teams_Automation/
@@ -96,7 +96,7 @@ MS_Teams_Automation/
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 Copy the provided `.env.example` file to create your own `.env` configuration file:
 
@@ -120,7 +120,7 @@ TIMEZONE=Asia/Kolkata
 
 ---
 
-## 🚀 Installation & Usage
+## Installation & Usage
 
 ### 1. Install Dependencies
 Ensure you have Python 3.7+ installed.
@@ -148,7 +148,7 @@ DRY_RUN=true python main.py
 
 ---
 
-## 🧪 Testing
+## Testing
 
 The project includes a robust `pytest` suite designed to mathematically verify dynamic date discovery, 10-day activity thresholds, container-based UI generation, and deduplication boundaries.
 
@@ -159,14 +159,14 @@ python -m pytest -q
 
 ---
 
-## 🔮 Future Enhancements
+## Future Enhancements
 - **Interactive Responses:** Upgrading the Power Automate flow to capture interactive button clicks (e.g., "Mark Completed") and using the Microsoft Graph API to write the status directly back into the source Excel file.
 - **Multiple Channels:** Supporting routing applications to different Teams channels based on business unit mappings.
 
 ---
 
-## 🤝 Contributing
+## Contributing
 Contributions, issues, and feature requests are welcome! Ensure that all new features include corresponding `pytest` coverage and do not break the dynamic date-parsing engine.
 
-## 📄 License
+## License
 This project is licensed under the MIT License.
