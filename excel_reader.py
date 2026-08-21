@@ -3,6 +3,103 @@ import os
 import sys
 import shutil
 import tempfile
+import re
+
+def parse_pm_value(pm_val):
+    if pm_val is None or pd.isna(pm_val):
+        return None
+    pm_val = str(pm_val).strip()
+    pm_val = pm_val.replace('\xa0', ' ')
+    if not pm_val or pm_val.lower() == 'nan' or pm_val.lower() == 'none':
+        return None
+        
+    # Match Name <email>
+    match = re.match(r"^(.*?)\s*<([^>@]+@[^>]+)>$", pm_val)
+    if match:
+        name = match.group(1).strip()
+        email = match.group(2).strip()
+        return {"name": name, "email": email, "pm_missing": False}
+        
+    return {"name": pm_val, "email": "", "pm_missing": False}
+
+def find_pm_mappings(file_path):
+    email_map = {}
+    if not os.path.exists(file_path):
+        return email_map
+        
+    fd, temp_path = tempfile.mkstemp(suffix='.xlsx')
+    os.close(fd)
+    
+    try:
+        shutil.copy2(file_path, temp_path)
+        xl = pd.ExcelFile(temp_path)
+        
+        # Scan all sheets
+        for sheet in xl.sheet_names:
+            try:
+                df = pd.read_excel(temp_path, sheet_name=sheet, header=None)
+                if df.empty:
+                    continue
+                    
+                header_row_idx = None
+                name_col_idx = None
+                email_col_idx = None
+                
+                # Scan first 10 rows for name and email headers
+                for r_idx in range(min(10, len(df))):
+                    row_vals = [str(x).strip().lower() if pd.notna(x) else "" for x in df.iloc[r_idx]]
+                    temp_name_idx = None
+                    temp_email_idx = None
+                    
+                    for c_idx, val in enumerate(row_vals):
+                        if val in ['name', 'responsible pm', 'pm name', 'pm']:
+                            temp_name_idx = c_idx
+                        elif val in ['email', 'email id', 'pm email', 'emailid', 'teams email', 'email/teams']:
+                            temp_email_idx = c_idx
+                            
+                    if temp_name_idx is not None and temp_email_idx is not None:
+                        header_row_idx = r_idx
+                        name_col_idx = temp_name_idx
+                        email_col_idx = temp_email_idx
+                        break
+                        
+                if header_row_idx is not None:
+                    for r_idx in range(header_row_idx + 1, len(df)):
+                        name_val = df.iloc[r_idx, name_col_idx]
+                        email_val = df.iloc[r_idx, email_col_idx]
+                        if pd.notna(name_val) and pd.notna(email_val):
+                            name_str = str(name_val).strip().replace('\xa0', ' ')
+                            email_str = str(email_val).strip()
+                            if name_str and email_str and "@" in email_str:
+                                email_map[name_str.lower()] = email_str
+            except Exception as e:
+                print(f"[WARNING] Could not scan sheet '{sheet}' for PM mappings: {e}")
+    except Exception as e:
+        print(f"[WARNING] Could not read mappings from Excel file: {e}")
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
+            
+    return email_map
+
+def resolve_pm_identity(pm_val, email_map):
+    parsed = parse_pm_value(pm_val)
+    if not parsed:
+        return {"name": "", "email": "", "pm_missing": True}
+        
+    name = parsed["name"]
+    email = parsed["email"]
+    
+    if not email:
+        email = email_map.get(name.lower(), "")
+        
+    if name and not email:
+        print(f"[WARNING] Could not resolve email for PM: '{name}'")
+        
+    return {"name": name, "email": email, "pm_missing": False}
 
 def read_config_params(file_path):
     params = {
@@ -71,16 +168,8 @@ def read_tasks(file_path, sheet_name=None):
             else:
                 selected_sheet = xl.sheet_names[0]
         
-        # Read Sheet2 for emails if it exists
-        email_map = {}
-        if 'Sheet2' in xl.sheet_names:
-            try:
-                df_emails = pd.read_excel(temp_path, sheet_name="Sheet2")
-                df_emails.columns = df_emails.columns.str.strip()
-                df_emails['Name'] = df_emails['Name'].astype(str).str.replace(r'\xa0', ' ', regex=True).str.strip()
-                email_map = dict(zip(df_emails['Name'], df_emails['Email']))
-            except Exception as e:
-                print(f"[WARNING] Could not read Sheet2 for emails: {e}")
+        # Build PM name-to-email mapping dynamically by scanning all sheets
+        email_map = find_pm_mappings(temp_path)
         
         # Determine header structure
         df_preview = pd.read_excel(temp_path, sheet_name=selected_sheet, header=None, nrows=2)
@@ -126,17 +215,12 @@ def read_tasks(file_path, sheet_name=None):
                 row_dict['Application'] = app_val
                 row_dict['APP'] = app_val
                 
-                pm_val = str(row_dict.get('Responsible PM', '')).strip()
-                if pm_val == "nan" or pm_val == "":
-                    row_dict['Responsible PM'] = ""
-                    row_dict['Name'] = ""
-                    row_dict['pm_missing'] = True
-                    row_dict['Email/Teams'] = ""
-                else:
-                    row_dict['Responsible PM'] = pm_val
-                    row_dict['Name'] = pm_val
-                    row_dict['pm_missing'] = False
-                    row_dict['Email/Teams'] = email_map.get(pm_val, "")
+                pm_val = row_dict.get('Responsible PM', '')
+                identity = resolve_pm_identity(pm_val, email_map)
+                row_dict['Responsible PM'] = identity['name']
+                row_dict['Name'] = identity['name']
+                row_dict['pm_missing'] = identity['pm_missing']
+                row_dict['Email/Teams'] = identity['email']
                     
                 if 'Start Date' not in row_dict:
                     if 'Sprint Start' in row_dict:
@@ -157,17 +241,12 @@ def read_tasks(file_path, sheet_name=None):
                 if 'APP' not in row_dict and 'Application' in row_dict:
                     row_dict['APP'] = row_dict['Application']
                     
-                pm_val = str(row_dict.get('Responsible PM', '')).strip()
-                if pm_val == "nan" or pm_val == "":
-                    row_dict['Responsible PM'] = ""
-                    row_dict['Name'] = ""
-                    row_dict['pm_missing'] = True
-                    row_dict['Email/Teams'] = ""
-                else:
-                    row_dict['Responsible PM'] = pm_val
-                    row_dict['Name'] = pm_val
-                    row_dict['pm_missing'] = False
-                    row_dict['Email/Teams'] = email_map.get(pm_val, "")
+                pm_val = row_dict.get('Responsible PM', '')
+                identity = resolve_pm_identity(pm_val, email_map)
+                row_dict['Responsible PM'] = identity['name']
+                row_dict['Name'] = identity['name']
+                row_dict['pm_missing'] = identity['pm_missing']
+                row_dict['Email/Teams'] = identity['email']
                     
                 if 'Start Date' not in row_dict:
                     if 'Sprint Start' in row_dict:
