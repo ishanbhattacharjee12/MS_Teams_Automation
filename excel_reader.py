@@ -5,6 +5,50 @@ import shutil
 import tempfile
 import re
 
+def normalize_header(header_val):
+    s = str(header_val).strip().lower()
+    s = re.sub(r'[^a-z0-9]+', '', s)
+    return s
+
+NORM_MAP = {
+    'application': 'Application',
+    'app': 'Application',
+    
+    'responsiblepm': 'Responsible PM',
+    'pmname': 'Responsible PM',
+    'pm': 'Responsible PM',
+    'name': 'Responsible PM',
+    
+    'sprint': 'Sprint',
+    
+    'overallstatus': 'Overall Status',
+    'status': 'Overall Status',
+    
+    'nextaction': 'Next Action',
+    
+    'nextactiondate': 'Next Action Date',
+    
+    'sprintstart': 'Sprint Start',
+    'effectivesprintstart': 'Effective Sprint Start',
+    
+    'sprintend': 'Sprint End',
+    'effectivesprintend': 'Effective Sprint End',
+    
+    'releasedate': 'Release Date',
+    'effectivereleasedate': 'Effective Release Date',
+    
+    'appreadyby': 'App Ready By',
+    'sprintreadinessdate': 'Sprint Readiness Date',
+    'sprintreadinessstatus': 'Sprint Readiness Status',
+    'validationnotes': 'Validation / Notes',
+    'daysoverdue': 'Days Overdue',
+    
+    'filetypeallenvs': 'file_type',
+    'filetype': 'file_type',
+    'frequencyallenvs': 'frequency',
+    'frequency': 'frequency'
+}
+
 def parse_pm_value(pm_val):
     if pm_val is None or pd.isna(pm_val):
         return None
@@ -23,9 +67,9 @@ def parse_pm_value(pm_val):
     return {"name": pm_val, "email": "", "pm_missing": False}
 
 def find_pm_mappings(file_path):
-    email_map = {}
+    mappings = {}
     if not os.path.exists(file_path):
-        return email_map
+        return mappings
         
     fd, temp_path = tempfile.mkstemp(suffix='.xlsx')
     os.close(fd)
@@ -33,9 +77,11 @@ def find_pm_mappings(file_path):
     try:
         shutil.copy2(file_path, temp_path)
         xl = pd.ExcelFile(temp_path)
+        sheet_names = xl.sheet_names
+        xl.close()
         
         # Scan all sheets
-        for sheet in xl.sheet_names:
+        for sheet in sheet_names:
             try:
                 df = pd.read_excel(temp_path, sheet_name=sheet, header=None)
                 if df.empty:
@@ -52,9 +98,10 @@ def find_pm_mappings(file_path):
                     temp_email_idx = None
                     
                     for c_idx, val in enumerate(row_vals):
-                        if val in ['name', 'responsible pm', 'pm name', 'pm']:
+                        val_clean = re.sub(r'[^a-z]+', '', val)
+                        if val_clean in ['name', 'responsiblepm', 'pmname', 'pm']:
                             temp_name_idx = c_idx
-                        elif val in ['email', 'email id', 'pm email', 'emailid', 'teams email', 'email/teams']:
+                        elif val_clean in ['email', 'emailid', 'pmemail', 'teamsemail', 'emailteams']:
                             temp_email_idx = c_idx
                             
                     if temp_name_idx is not None and temp_email_idx is not None:
@@ -71,7 +118,16 @@ def find_pm_mappings(file_path):
                             name_str = str(name_val).strip().replace('\xa0', ' ')
                             email_str = str(email_val).strip()
                             if name_str and email_str and "@" in email_str:
-                                email_map[name_str.lower()] = email_str
+                                name_lower = name_str.lower()
+                                if name_lower in mappings:
+                                    existing_email = mappings[name_lower]["email"]
+                                    if existing_email.lower() != email_str.lower():
+                                        print(f"[WARNING] Conflicting PM mappings found for '{name_str}': '{existing_email}' vs '{email_str}'. Keeping the first mapping '{existing_email}'.")
+                                else:
+                                    mappings[name_lower] = {
+                                        "name": name_str,
+                                        "email": email_str
+                                    }
             except Exception as e:
                 print(f"[WARNING] Could not scan sheet '{sheet}' for PM mappings: {e}")
     except Exception as e:
@@ -83,9 +139,9 @@ def find_pm_mappings(file_path):
         except Exception:
             pass
             
-    return email_map
+    return mappings
 
-def resolve_pm_identity(pm_val, email_map):
+def resolve_pm_identity(pm_val, mappings, seen_pms=None):
     parsed = parse_pm_value(pm_val)
     if not parsed:
         return {"name": "", "email": "", "pm_missing": True}
@@ -93,13 +149,27 @@ def resolve_pm_identity(pm_val, email_map):
     name = parsed["name"]
     email = parsed["email"]
     
-    if not email:
-        email = email_map.get(name.lower(), "")
+    name_lower = name.lower()
+    
+    if name_lower in mappings:
+        standard_name = mappings[name_lower]["name"]
+        resolved_email = mappings[name_lower]["email"]
+    else:
+        if seen_pms is not None:
+            if name_lower not in seen_pms:
+                seen_pms[name_lower] = name
+            standard_name = seen_pms[name_lower]
+        else:
+            standard_name = name
+        resolved_email = email
         
-    if name and not email:
-        print(f"[WARNING] Could not resolve email for PM: '{name}'")
+    if email:
+        resolved_email = email
         
-    return {"name": name, "email": email, "pm_missing": False}
+    if standard_name and not resolved_email:
+        print(f"[WARNING] Could not resolve email for PM: '{standard_name}'")
+        
+    return {"name": standard_name, "email": resolved_email, "pm_missing": False}
 
 def read_config_params(file_path):
     params = {
@@ -124,7 +194,10 @@ def read_config_params(file_path):
     try:
         shutil.copy2(file_path, temp_path)
         xl = pd.ExcelFile(temp_path)
-        if 'Config' in xl.sheet_names:
+        has_config = 'Config' in xl.sheet_names
+        xl.close()
+        
+        if has_config:
             df = pd.read_excel(temp_path, sheet_name='Config', header=None)
             for row in df.values:
                 if len(row) > 1:
@@ -167,22 +240,26 @@ def read_tasks(file_path, sheet_name=None):
                 selected_sheet = 'Sheet1'
             else:
                 selected_sheet = xl.sheet_names[0]
+        xl.close()
         
-        # Build PM name-to-email mapping dynamically by scanning all sheets
-        email_map = find_pm_mappings(temp_path)
+        # Build PM mappings
+        mappings = find_pm_mappings(temp_path)
         
         # Determine header structure
         df_preview = pd.read_excel(temp_path, sheet_name=selected_sheet, header=None, nrows=2)
         row0_col0 = str(df_preview.iloc[0, 0]).strip().lower() if len(df_preview) > 0 and pd.notna(df_preview.iloc[0, 0]) else ""
         row1_col0 = str(df_preview.iloc[1, 0]).strip().lower() if len(df_preview) > 1 and pd.notna(df_preview.iloc[1, 0]) else ""
         
+        row0_norm = normalize_header(row0_col0)
+        row1_norm = normalize_header(row1_col0)
+        
         is_multi_index = False
         header_idx = 0
         
-        if "application" in row1_col0 or "app" in row1_col0:
+        if row1_norm in ['application', 'app']:
             is_multi_index = True
             header_idx = [0, 1]
-        elif "application" in row0_col0 or "app" in row0_col0:
+        elif row0_norm in ['application', 'app']:
             is_multi_index = False
             header_idx = 0
         else:
@@ -197,68 +274,51 @@ def read_tasks(file_path, sheet_name=None):
             
         records = []
         df_records = df.to_dict('records')
+        seen_pms = {}
         
         for row in df_records:
             row_dict = {}
-            if is_multi_index:
-                # Populate tuple keys
-                for col_tuple in df.columns:
-                    group, col_name = col_tuple
-                    val = row[col_tuple]
-                    row_dict[col_tuple] = val
-                    
-                    col_name_clean = str(col_name).strip()
-                    if col_name_clean not in row_dict:
-                        row_dict[col_name_clean] = val
+            for col in df.columns:
+                val = row[col]
+                row_dict[col] = val
                 
-                app_val = row_dict.get('Application', '')
-                row_dict['Application'] = app_val
-                row_dict['APP'] = app_val
+                col_str = col[1] if isinstance(col, tuple) else col
+                col_str_clean = str(col_str).strip()
                 
-                pm_val = row_dict.get('Responsible PM', '')
-                identity = resolve_pm_identity(pm_val, email_map)
-                row_dict['Responsible PM'] = identity['name']
-                row_dict['Name'] = identity['name']
-                row_dict['pm_missing'] = identity['pm_missing']
-                row_dict['Email/Teams'] = identity['email']
-                    
-                if 'Start Date' not in row_dict:
-                    if 'Sprint Start' in row_dict:
-                        row_dict['Start Date'] = row_dict['Sprint Start']
-                    elif 'Effective Sprint Start' in row_dict:
-                        row_dict['Start Date'] = row_dict['Effective Sprint Start']
-                        
-                if 'End Date' not in row_dict:
-                    if 'Sprint End' in row_dict:
-                        row_dict['End Date'] = row_dict['Sprint End']
-                    elif 'Effective Sprint End' in row_dict:
-                        row_dict['End Date'] = row_dict['Effective Sprint End']
-            else:
-                for col_name in df.columns:
-                    col_name_clean = str(col_name).strip()
-                    row_dict[col_name_clean] = row[col_name]
+                norm_key = normalize_header(col_str_clean)
+                if norm_key in NORM_MAP:
+                    standard_key = NORM_MAP[norm_key]
+                    row_dict[standard_key] = val
                 
-                if 'APP' not in row_dict and 'Application' in row_dict:
-                    row_dict['APP'] = row_dict['Application']
+                if col_str_clean not in row_dict:
+                    row_dict[col_str_clean] = val
+            
+            app_val = row_dict.get('Application', '')
+            row_dict['Application'] = app_val
+            row_dict['APP'] = app_val
+            
+            pm_val = row_dict.get('Responsible PM', '')
+            identity = resolve_pm_identity(pm_val, mappings, seen_pms)
+            row_dict['Responsible PM'] = identity['name']
+            row_dict['Name'] = identity['name']
+            row_dict['pm_missing'] = identity['pm_missing']
+            row_dict['Email/Teams'] = identity['email']
+                
+            if 'Start Date' not in row_dict:
+                if 'Sprint Start' in row_dict:
+                    row_dict['Start Date'] = row_dict['Sprint Start']
+                elif 'Effective Sprint Start' in row_dict:
+                    row_dict['Start Date'] = row_dict['Effective Sprint Start']
                     
-                pm_val = row_dict.get('Responsible PM', '')
-                identity = resolve_pm_identity(pm_val, email_map)
-                row_dict['Responsible PM'] = identity['name']
-                row_dict['Name'] = identity['name']
-                row_dict['pm_missing'] = identity['pm_missing']
-                row_dict['Email/Teams'] = identity['email']
-                    
-                if 'Start Date' not in row_dict:
-                    if 'Sprint Start' in row_dict:
-                        row_dict['Start Date'] = row_dict['Sprint Start']
-                    elif 'Effective Sprint Start' in row_dict:
-                        row_dict['Start Date'] = row_dict['Effective Sprint Start']
-                        
-                if 'End Date' not in row_dict:
-                    if 'Sprint End' in row_dict:
-                        row_dict['End Date'] = row_dict['Sprint End']
-                    elif 'Effective Sprint End' in row_dict:
-                        row_dict['End Date'] = row_dict['Effective Sprint End']
+            if 'End Date' not in row_dict:
+                if 'Sprint End' in row_dict:
+                    row_dict['End Date'] = row_dict['Sprint End']
+                elif 'Effective Sprint End' in row_dict:
+                    row_dict['End Date'] = row_dict['Effective Sprint End']
+            
+            # Ensure file_type and frequency keys exist in row_dict
+            row_dict['file_type'] = row_dict.get('file_type', '')
+            row_dict['frequency'] = row_dict.get('frequency', '')
             
             for k in list(row_dict.keys()):
                 if pd.isna(row_dict[k]):

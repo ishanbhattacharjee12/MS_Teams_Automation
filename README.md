@@ -78,7 +78,8 @@ Instead of hardcoding "Dev OUR", the script dynamically discovers date-bearing c
 
 ```text
 MS_Teams_Automation/
-├── main.py                     # Core orchestrator and execution logic
+├── teams_automation.py         # Official user-facing production launcher
+├── automation_core.py          # Core orchestrator and execution logic
 ├── config.py                   # Environment variable loading & setup
 ├── date_checker.py             # Timezone-aware date parsing & reminder logic
 ├── excel_reader.py             # Safe Excel extraction (bypasses OneDrive locks)
@@ -131,7 +132,7 @@ pip install -r requirements.txt
 ### 2. Running the Automation
 Execute the main entry point to process the Excel sheet and send the notification:
 ```bash
-python main.py
+python teams_automation.py
 ```
 
 ### 3. Dry Run Mode
@@ -139,11 +140,11 @@ Safely evaluate business logic and preview the generated JSON without dispatchin
 
 **Windows (PowerShell):**
 ```powershell
-$env:DRY_RUN="true"; python main.py
+$env:DRY_RUN="true"; python teams_automation.py
 ```
 **Linux / Mac:**
 ```bash
-DRY_RUN=true python main.py
+DRY_RUN=true python teams_automation.py
 ```
 
 ---

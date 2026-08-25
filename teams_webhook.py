@@ -1,10 +1,17 @@
 import requests
 import config
 
+def sanitize_url(url):
+    if not url:
+        return ""
+    if "?" in url:
+        return url.split("?")[0] + "?..."
+    return url
+
 def send_notification(card_dict):
     if not config.TEAMS_WEBHOOK_URL:
         print("[ERROR] TEAMS_WEBHOOK_URL is not set in environment.")
-        return False
+        return False, None, "TEAMS_WEBHOOK_URL is not set"
         
     payload = {
         "card": card_dict
@@ -17,8 +24,11 @@ def send_notification(card_dict):
             headers={"Content-Type": "application/json"},
             timeout=30
         )
-        response.raise_for_status()
-        return True
+        if response.status_code >= 400:
+            return False, response.status_code, response.text
+        return True, response.status_code, ""
     except requests.exceptions.RequestException as e:
-        print(f"[ERROR] Teams webhook failed: {e}")
-        return False
+        err_msg = str(e)
+        if config.TEAMS_WEBHOOK_URL and config.TEAMS_WEBHOOK_URL in err_msg:
+            err_msg = err_msg.replace(config.TEAMS_WEBHOOK_URL, sanitize_url(config.TEAMS_WEBHOOK_URL))
+        return False, None, err_msg

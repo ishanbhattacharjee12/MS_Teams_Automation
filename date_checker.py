@@ -10,8 +10,9 @@ def parse_date(date_val):
     if pd.isna(date_val) or str(date_val).strip() == "":
         return None
     try:
-        dt = pd.to_datetime(date_val).to_pydatetime()
-        return dt.date()
+        dt = pd.to_datetime(date_val)
+        import datetime as dt_mod
+        return dt_mod.date(dt.year, dt.month, dt.day)
     except Exception:
         return None
 
@@ -33,3 +34,16 @@ def is_in_reminder_window(target_date, days_before):
     window_start = target_date - timedelta(days=days_before)
     
     return window_start <= today <= target_date
+
+def get_urgency_info(target_date, warning_days, today=None):
+    if target_date is None:
+        return 'none', '', ''
+    if today is None:
+        today = get_today()
+    diff = (target_date - today).days
+    if diff < 0:
+        return 'overdue', '🔴 ', ' — Overdue'
+    elif diff <= warning_days:
+        return 'due_soon', '🟡 ', ' — Due soon'
+    else:
+        return 'none', '', ''

@@ -1,6 +1,7 @@
 import config
 import json
 import os
+import re
 from excel_reader import read_tasks, read_config_params
 from message_builder import build_consolidated_message
 from teams_webhook import send_notification
@@ -48,17 +49,8 @@ def get_pending_activities(row, config_params=None):
     today = get_today()
     warning_days = config_params.get('SprintWarningDays', 10) if config_params else 10
     
-    MILESTONE_COLUMNS = {
-        'Sprint Start', 'Sprint End', 'Release Date',
-        'Effective Sprint Start', 'Effective Sprint End', 'Effective Release Date',
-        'App Ready By'
-    }
-    
-    exclude_cols = {
-        'Next Action Date', 'Start Date', 'End Date', 'Application', 'Responsible PM',
-        'Sprint', 'Overall Status', 'Next Action', 'Days Overdue', 'Validation / Notes',
-        'Email/Teams', 'Name', 'APP'
-    }
+    MILESTONE_COLUMNS = config.PURE_MILESTONES
+    exclude_cols = config.METADATA_COLUMNS
     
     keys = list(row.keys())
     has_tuples = any(isinstance(k, tuple) for k in keys)
@@ -119,32 +111,84 @@ def get_pending_activities(row, config_params=None):
                         
     return pending, "_".join(statuses)
 
+def determine_next_action(row, config_params=None):
+    ACTIONABLE_TASKS = config.ACTIONABLE_TASKS
+    
+    keys = list(row.keys())
+    has_tuples = any(isinstance(k, tuple) for k in keys)
+    
+    candidates = []
+    
+    if has_tuples:
+        tuple_keys = [k for k in keys if isinstance(k, tuple)]
+        for k in tuple_keys:
+            group, col = k
+            col_str = str(col).strip()
+            
+            if col_str not in ACTIONABLE_TASKS:
+                continue
+                
+            act_date = parse_date(row.get(k))
+            if act_date is not None:
+                group_cols = [tk[1] for tk in tuple_keys if tk[0] == group]
+                matched_status_col = find_status_column(col_str, group_cols)
+                if matched_status_col is not None:
+                    status_tuple_key = (group, matched_status_col)
+                    st = str(row.get(status_tuple_key, '')).strip().replace('\xa0', '')
+                    if st.lower() != 'completed':
+                        candidates.append((col_str, act_date))
+    else:
+        for col in keys:
+            col_str = str(col).strip()
+            if col_str not in ACTIONABLE_TASKS:
+                continue
+                
+            act_date = parse_date(row.get(col))
+            if act_date is not None:
+                matched_status_col = find_status_column(col_str, keys)
+                if matched_status_col is not None:
+                    st = str(row.get(matched_status_col, '')).strip().replace('\xa0', '')
+                    if st.lower() != 'completed':
+                        candidates.append((col_str, act_date))
+                        
+    if candidates:
+        # Sort candidates by date
+        candidates.sort(key=lambda x: x[1])
+        return candidates[0][0], candidates[0][1]
+        
+    return "No actionable task identified", None
+
 def main():
-    print("[INFO] Loading Excel file...")
     tasks = read_tasks(config.EXCEL_FILE, config.SHEET_NAME)
+    print(f"[INFO] Workbook loaded: {len(tasks)} applications")
+    
     config_params = read_config_params(config.EXCEL_FILE)
-    print(f"[INFO] Loaded Config parameters: {config_params}")
+    
+    # Calculate resolved unique PMs count
+    unique_pms = set()
+    for r in tasks:
+        pm_name = str(r.get('Name', '')).strip().lower()
+        if pm_name and not r.get('pm_missing'):
+            unique_pms.add(pm_name)
+    print(f"[INFO] PM identities resolved: {len(unique_pms)}")
     
     if not tasks:
         print("[INFO] No tasks found.")
         return
         
-    print(f"[INFO] Found {len(tasks)} applications.")
-    
     qualifying_apps = []
     warning_days = config_params.get('SprintWarningDays', config.REMINDER_DAYS_BEFORE)
     
     for row in tasks:
         app = row.get('APP', 'Unknown')
-        
+        if not app:
+            continue
+            
         pending_acts, all_statuses = get_pending_activities(row, config_params)
         
         if not pending_acts:
-            print(f"[INFO] {app}: all requests completed. No notification required.")
             continue
             
-        print(f"[INFO] {app}: pending request detected. Checking dates...")
-        
         start_date = parse_date(row.get('Start Date'))
         end_date = parse_date(row.get('End Date'))
         
@@ -155,7 +199,6 @@ def main():
             reminder_types.append(('END_DATE', end_date))
             
         if not reminder_types:
-            print(f"[INFO] {app}: neither Start Date nor End Date are in the reminder window.")
             continue
             
         valid_reminders = []
@@ -163,30 +206,46 @@ def main():
             if config.ENABLE_DEDUPLICATION and not should_send_notification(
                 app, r_type, str(r_date), all_statuses, "", "", config.ENABLE_DEDUPLICATION
             ):
-                print(f"[INFO] {app}: {r_type} duplicate notification prevented by deduplication logic.")
+                pass
             else:
                 valid_reminders.append((r_type, r_date))
                 
         if valid_reminders:
+            next_act, next_act_date = determine_next_action(row, config_params)
+            
+            overall_status = str(row.get('Overall Status', '')).strip()
+            if not overall_status:
+                overall_status = "Not available"
+                
             qualifying_apps.append({
                 "app": app,
                 "row": row,
                 "reminders": valid_reminders,
                 "pending_activities": pending_acts,
-                "all_statuses": all_statuses
+                "all_statuses": all_statuses,
+                "overall_status": overall_status,
+                "next_action": next_act,
+                "next_action_date": next_act_date
             })
-            print(f"[INFO] {app}: qualified for notification.")
+
+    # Stats for logging
+    num_unassigned = sum(1 for qa in qualifying_apps if qa["row"].get("pm_missing"))
+    num_unresolved_emails = sum(1 for qa in qualifying_apps if not qa["row"].get("pm_missing") and not qa["row"].get("Email/Teams"))
+    
+    print(f"[INFO] Applications requiring notification: {len(qualifying_apps)}")
+    print(f"[INFO] Unassigned PM applications: {num_unassigned}")
+    print(f"[INFO] Applications with unresolved PM emails: {num_unresolved_emails}")
 
     if not qualifying_apps:
         print("[INFO] No applications qualify for notification at this time. Processing complete.")
         return
 
-    cards = build_consolidated_message(qualifying_apps)
+    cards = build_consolidated_message(qualifying_apps, config_params=config_params)
+    print(f"[INFO] Adaptive Cards generated: {len(cards)}")
     
-    print(f"[INFO] Generated {len(cards)} Adaptive Card(s).")
     for idx, c in enumerate(cards):
         size_bytes = len(json.dumps(c).encode('utf-8'))
-        print(f"[INFO] Card {idx+1} size: {size_bytes / 1024.0:.2f} KB ({size_bytes} bytes)")
+        print(f"[INFO] Card {idx+1}: {size_bytes} bytes")
         
     if config.DRY_RUN:
         print("\n--- DRY RUN: WOULD SEND CONSOLIDATED ADAPTIVE CARDS ---")
@@ -195,26 +254,32 @@ def main():
             print(json.dumps({"card": c}, indent=2))
         print("------------------------------------------------------\n")
     else:
-        print("[INFO] Sending consolidated Teams notification(s)...")
         all_success = True
         for idx, c in enumerate(cards):
-            success = send_notification(c)
+            print(f"[INFO] Sending card {idx+1}/{len(cards)}...")
+            success, status_code, err_msg = send_notification(c)
             if success:
-                print(f"[INFO] Card {idx+1} sent successfully.")
+                pass
             else:
-                print(f"[ERROR] Failed to send Card {idx+1}.")
+                print(f"[ERROR] Teams notification failed for card {idx+1}/{len(cards)}")
+                if status_code is not None:
+                    print(f"[ERROR] HTTP {status_code} - {err_msg}")
+                else:
+                    print(f"[ERROR] Connection Error - {err_msg}")
+                
+                size_bytes = len(json.dumps(c).encode('utf-8'))
+                if size_bytes < 18000:
+                    print(f"[WARNING] Card size ({size_bytes} bytes) is below the safety threshold. The failure is likely due to downstream Power Automate issues (invalid credentials, disabled flow, or connector limit).")
                 all_success = False
                 
         if all_success:
-            print("[INFO] All Teams notifications sent successfully.")
             if config.ENABLE_DEDUPLICATION:
                 for qa in qualifying_apps:
                     for r_type, r_date in qa["reminders"]:
                         update_state(qa["app"], r_type, str(r_date), qa["all_statuses"], "", "")
+            print("[INFO] Processing complete")
         else:
             print("[ERROR] One or more Teams notifications failed.")
-
-    print("[INFO] Processing complete.")
 
 if __name__ == "__main__":
     main()
